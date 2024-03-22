@@ -60,19 +60,19 @@ impl TryFrom<&[u8]> for ASPMessage {
         })
     }
 }
-
+// Note to self: issue is padding! name must always be 32 bytes long!
 impl TryInto<[u8; 41]> for ASPMessage {
     type Error = Error;
     fn try_into(self) -> Result<[u8; 41], Error> {
         let mut out: Vec<u8> = vec!();
         // add name to payload
-        out.extend_from_slice(self.activator_name.as_bytes());
+        out.extend_from_slice(pad_name(self.activator_name).as_bytes());
         // add alarm detail byte to payload
         out.push(build_alarm_byte(self.alarm_type, self.alarm_details));
         // calculate current system time (UNIX Timestamp)
         let ts = time::SystemTime::now().duration_since(time::UNIX_EPOCH)
             .map_err(|_err|data_err("Invalid Timestamp"))?;
-        // add timestamp to payload
+        // add timestamp to payload PROBLEM ZONE
         out.extend_from_slice(ts.as_secs().to_be_bytes().as_slice());
         <[u8; 41]>::try_from(out.as_slice()).map_err(|err|data_err(
             format!("Conversion failed: {}", err).as_str()))
@@ -105,7 +105,6 @@ impl ASPMessage{
     }
     pub fn sign(&self, signing_key: SigningKey<Sha256>) -> Result<Signature, Error> {
         let mut rng = rand::thread_rng();
-        println!("checkpoint");
         let sclone = self.clone();
         let body: [u8; 41] = sclone.try_into()?;
         let signature = signing_key.sign_with_rng(&mut rng, body.as_slice());
@@ -148,4 +147,13 @@ fn build_alarm_byte(atype: AlarmType, details: Vec<AlarmDetail>) -> u8{
         }
     }
     retn
+}
+
+
+fn pad_name(name: String) -> String {
+    let mut tmp = name.clone();
+    while tmp.len() < 32{
+        tmp.push('=');
+    }
+    tmp
 }
