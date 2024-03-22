@@ -1,3 +1,5 @@
+mod data_structures;
+
 use std::io;
 use std::io::{Error, Read};
 use rsa::RsaPrivateKey;
@@ -5,8 +7,11 @@ use rsa::pkcs1v15::{Signature, SigningKey, VerifyingKey};
 use rsa::signature::{Keypair, RandomizedSigner, SignatureEncoding, Verifier};
 use rsa::sha2::{Digest, Sha256};
 use std::net::{UdpSocket, SocketAddr, IpAddr};
+use crate::AlarmType::{Fire, Intruder};
+use std::time;
 
 const PORTNUM: u16 = 56185;
+
 pub struct ASP {
     socket: UdpSocket,
     signing_key: SigningKey<Sha256>,
@@ -37,7 +42,9 @@ pub struct ASPMessage {
     signature: Signature,
     raw: [u8; 37],
 }
+
 impl TryFrom<&[u8]> for ASPMessage {
+    type Error = Error;
     fn try_from(value: &[u8]) -> Result<Self, Error> {
         let message_vec = value.to_vec();
         if message_vec.len() != 164 {
@@ -45,17 +52,32 @@ impl TryFrom<&[u8]> for ASPMessage {
         }
         let namevec: Vec<u8> = message_vec[0..32].to_vec();
         let alarm_code = message_vec[32];
+        let alarm_type: AlarmType;
+        if (alarm_code & 0x80) !=0 {
+            alarm_type = Fire
+        }
+        else if (alarm_code & 0x40) !=0 {
+            alarm_type = Intruder
+        }
+        else { return Err(data_err("No alarm type specified!")); }
+        // TODO: verify timestamp within tolerance
         let timebytes: [u8; 4] = message_vec[33 .. 38].try_into()
             .map_err(|_err|data_err("Invalid Timestamp"))?;
+        let test: u32 = 1711129830;
+        let a = time::Duration::from
+        let sigarray = &message_vec[38 ..];
 
         Ok(ASPMessage {
             activator_name: String::from_utf8(namevec)
                 .map_err(|_err|Error::new(io::ErrorKind::InvalidData,"Bad name data"))?,
-            alarm_code: ,
-            signature: Signature::try_from(sigarray)?
+            alarm_details: alarm_byte_to_vec(alarm_code),
+            alarm_type,
+            signature: Signature::try_from(sigarray)
+                .map_err(|err|data_err(format!("Could not parse signature: {}", err.to_string()).as_str()))?,
+            raw: message_vec[0 .. 38].try_into()
+                .map_err(|_err|data_err("Payload anomaly"))?
         })
     }
-    type Error = Error;
 }
 
 impl ASPMessage{
@@ -68,6 +90,24 @@ impl ASPMessage{
 
 fn data_err(msg: &str) -> io::Error {
     Error::new(io::ErrorKind::InvalidData, msg)
+}
+
+fn alarm_byte_to_vec(byte: u8) -> Vec<AlarmDetail> {
+    let mut retn: Vec<AlarmDetail> = vec!();
+    // mfw rust doesn't have implicit casts to bool
+    if (byte & 0x1) != 0 {
+        retn.push(AlarmDetail::Silent);
+    }
+    if (byte & 0x2) != 0 {
+        retn.push(AlarmDetail::Browser);
+    }
+    if (byte & 0x4) != 0 {
+        retn.push(AlarmDetail::Lockdown);
+    }
+    if (byte & 0x8) != 0 {
+        retn.push(AlarmDetail::Evacuate);
+    }
+    retn
 }
 
 enum AlarmDetail {
