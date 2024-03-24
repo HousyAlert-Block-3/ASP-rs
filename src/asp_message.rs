@@ -1,10 +1,11 @@
 use std::{fmt, io, time};
 use std::fmt::Display;
 use std::io::Error;
+use rsa::pkcs1::der::ErrorKind;
 
 use rsa::pkcs1v15::{Signature, SigningKey, VerifyingKey};
 use rsa::sha2::Sha256;
-use rsa::signature::{RandomizedSigner, Verifier};
+use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
 
 use crate::data_err;
 use crate::data_structures::{AlarmDetail, AlarmType};
@@ -15,7 +16,7 @@ pub struct ASPMessage {
     pub alarm_details: Vec<AlarmDetail>,
     pub alarm_type: AlarmType,
     pub signature: Option<Signature>,
-    pub(crate) raw: Option<[u8; 41]>,
+    pub(crate) raw: Option<Vec<u8>>,
 }
 
 impl TryFrom<&[u8]> for ASPMessage {
@@ -36,8 +37,8 @@ impl TryFrom<&[u8]> for ASPMessage {
         }
         else { return Err(data_err("No alarm type specified!")); }
         // Get timestamp from payload, convert to u64
-        let timebytes: [u8; 8] = message_vec[33 .. 42].try_into()
-            .map_err(|_err|data_err("Invalid Timestamp"))?;
+        let timebytes: [u8; 8] = message_vec[33 .. 41].try_into()
+            .map_err(|err|data_err(&format!("Invalid Timestamp: {}", err)))?;
         let timestamp = time::Duration::from_secs(u64::from_be_bytes(timebytes));
         let mesg_time = time::UNIX_EPOCH + timestamp;
         let elapsed = time::SystemTime::now().duration_since(mesg_time)
@@ -60,24 +61,25 @@ impl TryFrom<&[u8]> for ASPMessage {
         })
     }
 }
-// Note to self: issue is padding! name must always be 32 bytes long!
-impl TryInto<[u8; 41]> for ASPMessage {
-    type Error = Error;
-    fn try_into(self) -> Result<[u8; 41], Error> {
-        let mut out: Vec<u8> = vec!();
-        // add name to payload
-        out.extend_from_slice(pad_name(self.activator_name).as_bytes());
-        // add alarm detail byte to payload
-        out.push(build_alarm_byte(self.alarm_type, self.alarm_details));
-        // calculate current system time (UNIX Timestamp)
-        let ts = time::SystemTime::now().duration_since(time::UNIX_EPOCH)
-            .map_err(|_err|data_err("Invalid Timestamp"))?;
-        // add timestamp to payload PROBLEM ZONE
-        out.extend_from_slice(ts.as_secs().to_be_bytes().as_slice());
-        <[u8; 41]>::try_from(out.as_slice()).map_err(|err|data_err(
-            format!("Conversion failed: {}", err).as_str()))
+
+impl TryInto<Vec<u8>> for ASPMessage {
+    type Error=Error;
+    fn try_into(mut self) -> Result<Vec<u8>, Error> {
+        // encode body to bytes using private function
+        let mut body = self.encode_body()?;
+        // encode signature
+        match self.signature {
+            Some(s) => {
+                body.append(&mut s.to_vec())
+            },
+            None => {
+                return Err(Error::new(io::ErrorKind::NotFound, "Not signed! Sign message first!"))
+            }
+        }
+        Ok(body)
     }
 }
+
 
 impl Display for ASPMessage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -87,7 +89,26 @@ impl Display for ASPMessage {
 }
 
 impl ASPMessage{
-    pub fn verify_sig(&self, pubkey: VerifyingKey<Sha256>) -> Result<(), Error> {
+    fn encode_body(&mut self) -> Result<Vec<u8>, Error> {
+        // skip encoding if encoded data already exists
+        if self.raw.is_some() {
+            return Ok(self.raw.clone().unwrap());
+        }
+        let mut out: Vec<u8> = vec!();
+        // add name to payload
+        out.extend_from_slice(pad_name(&self.activator_name).as_bytes());
+        // add alarm detail byte to payload
+        out.push(build_alarm_byte(&self.alarm_type, &self.alarm_details));
+        // calculate current system time (UNIX Timestamp)
+        let ts = time::SystemTime::now().duration_since(time::UNIX_EPOCH)
+            .map_err(|_err|data_err("Invalid Timestamp"))?;
+        // add timestamp to payload
+        out.extend_from_slice(ts.as_secs().to_be_bytes().as_slice());
+        // store encoded value in self.
+        self.raw = Some(out.clone());
+        Ok(out)
+    }
+    pub fn verify_sig(&self, pubkey: &VerifyingKey<Sha256>) -> Result<(), Error> {
         let sig: &Signature;
         let raw: &[u8];
         match &self.signature {
@@ -103,11 +124,11 @@ impl ASPMessage{
             .map_err(|err|data_err(format!("Signature Invalid! {}", err.to_string()).as_str()))?;
         Ok(())
     }
-    pub fn sign(&self, signing_key: SigningKey<Sha256>) -> Result<Signature, Error> {
+    pub fn sign(&mut self, signing_key: &SigningKey<Sha256>) -> Result<Signature, Error> {
         let mut rng = rand::thread_rng();
-        let sclone = self.clone();
-        let body: [u8; 41] = sclone.try_into()?;
+        let body: Vec<u8> = self.encode_body()?;
         let signature = signing_key.sign_with_rng(&mut rng, body.as_slice());
+        self.signature = Some(signature.clone());
         Ok(signature)
     }
 }
@@ -130,9 +151,9 @@ fn alarm_byte_to_vec(byte: u8) -> Vec<AlarmDetail> {
     retn
 }
 
-fn build_alarm_byte(atype: AlarmType, details: Vec<AlarmDetail>) -> u8{
+fn build_alarm_byte(atype: &AlarmType, details: &Vec<AlarmDetail>) -> u8{
     let mut retn: u8 = 0;
-    if atype == AlarmType::Intruder {
+    if *atype == AlarmType::Intruder {
         retn |= 0x40;
     }
     else {
@@ -150,7 +171,7 @@ fn build_alarm_byte(atype: AlarmType, details: Vec<AlarmDetail>) -> u8{
 }
 
 
-fn pad_name(name: String) -> String {
+fn pad_name(name: &String) -> String {
     let mut tmp = name.clone();
     while tmp.len() < 32{
         tmp.push('=');

@@ -41,20 +41,20 @@ fn data_err(msg: &str) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use rsa::pkcs1v15::Signature;
+    use rsa::pkcs1v15::{Signature, VerifyingKey};
     use crate::data_structures::{AlarmDetail, AlarmType};
     use super::*;
 
     #[test]
-    fn check_convert_and_back() {
+    fn sign_and_verify() {
         let mut rng = rand::thread_rng();
-    
+        // generate random signing key
         let bits = 2048;
         let private_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
         let signing_key = SigningKey::<Sha256>::new(private_key);
         let verifying_key = signing_key.verifying_key();
         // Generate payload
-        let orig: ASPMessage = ASPMessage {
+        let mut orig: ASPMessage = ASPMessage {
             activator_name: "test".to_string(),
             alarm_details: vec!(AlarmDetail::Silent),
             alarm_type: AlarmType::Intruder,
@@ -62,15 +62,34 @@ mod tests {
             raw: None
         };
         // Sign
-        let sig: Signature;
-        match orig.sign(signing_key) {
-            Ok(e) => sig = e,
-            Err(e) => panic!("Sign Error: {}",e)
-        }
-        
-    
+        orig.sign(&signing_key).unwrap();
+
         // Verify
-        let raw: [u8; 41] = orig.try_into().unwrap();
-        verifying_key.verify(raw.as_slice(), &sig).expect("Verification failed!");
-}
+        orig.verify_sig(&verifying_key).unwrap();
+    }
+    
+    #[test]
+    fn data_encode_decode() {
+        let mut rng = rand::thread_rng();
+        // generate random signing key
+        let bits = 2048;
+        let private_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
+        let signing_key = SigningKey::<Sha256>::new(private_key);
+        let mut orig: ASPMessage = ASPMessage {
+            activator_name: "test".to_string(),
+            alarm_details: vec!(AlarmDetail::Silent, AlarmDetail::Browser),
+            alarm_type: AlarmType::Intruder,
+            signature: None,
+            raw: None
+        };
+        orig.sign(&signing_key).unwrap();
+        let raw: Vec<u8> = orig.clone().try_into().unwrap();
+        let new: ASPMessage = ASPMessage::try_from(raw.as_slice()).expect("Conversion from raw failed!");
+        assert_eq!(&orig.activator_name, &new.activator_name);
+        assert_eq!(&orig.alarm_type, &new.alarm_type);
+        assert_eq!(&orig.alarm_details.len(), &new.alarm_details.len());
+        for i in  0 .. orig.alarm_details.len()  {
+            assert_eq!(orig.alarm_details[i], new.alarm_details[i]);
+        }
+    }
 }
