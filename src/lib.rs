@@ -1,17 +1,16 @@
-use std::io;
 use std::io::{Error, ErrorKind};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 
 use rsa::pkcs1v15::SigningKey;
-use rsa::RsaPrivateKey;
+
 use rsa::sha2::Sha256;
-use rsa::signature::{Keypair, RandomizedSigner, Verifier};
+
 use crate::asp_message::{ASPMessage, MESG_LEN};
 use crate::data_structures::{AlarmDetail, AlarmType};
 use log::{info, warn, debug, error};
 
-mod data_structures;
-mod asp_message;
+pub mod data_structures;
+pub mod asp_message;
 
 const PORTNUM: u16 = 56185;
 
@@ -21,21 +20,22 @@ pub struct ASP {
     signing_key: SigningKey<Sha256>,
     pretty_name: String,
 }
-
+/// Struct that stores the context for ASP handling, such as the name and socket.
 impl ASP {
     pub fn new(signing_key: &SigningKey<Sha256>, name: &str) -> Result<ASP, Error> {
         let any_iface = IpAddr::from([0,0,0,0]);
-        let mut instance: ASP = ASP {
+        let instance: ASP = ASP {
             socket: UdpSocket::bind(SocketAddr::new(any_iface, PORTNUM))?,
             signing_key: signing_key.clone(),
             pretty_name: name.chars().filter(|c| c.is_alphanumeric()).collect(),
         };
         instance.socket.set_broadcast(true)?;
         instance.socket.set_nonblocking(true)?;
+        info!("Registered new socket for ASP");
         Ok(instance)
     }
     pub fn broadcast(&self, alm_type: AlarmType, details: Vec<AlarmDetail>) -> Result<(), Error> {
-        let mut mesg: ASPMessage = ASPMessage {
+        let mesg: ASPMessage = ASPMessage {
             activator_name: self.pretty_name.clone(),
             alarm_details: details,
             alarm_type: alm_type,
@@ -45,7 +45,7 @@ impl ASP {
         };
         self.broadcast_message(mesg)
     }
-    
+
     pub fn broadcast_message(&self, mut message: ASPMessage) -> Result<(), Error> {
         message.sign(&self.signing_key)?;
         let raw: Vec<u8> = message.try_into().unwrap();
@@ -65,7 +65,7 @@ impl ASP {
                 Ok(Some(ASPMessage::try_from(mesgbuff.as_slice())?))
             }
             Err(e) => match e.kind() {
-                io::ErrorKind::WouldBlock => Ok(None),
+                ErrorKind::WouldBlock => Ok(None),
                 _ => Err(e)
             }
         }
@@ -78,6 +78,8 @@ fn data_err(msg: &str) -> Error {
 
 #[cfg(test)]
 mod tests {
+    use rsa::RsaPrivateKey;
+    use rsa::signature::Keypair;
     use crate::data_structures::{AlarmDetail, AlarmType};
 
     use super::*;
@@ -158,7 +160,6 @@ mod tests {
     #[test]
     fn send_activation_command() {
         let signing_key = test_generate_rand_key();
-        let verifying_key = signing_key.verifying_key();
         let asp_inst = ASP::new(&signing_key, "Unit Tests").unwrap();
         asp_inst.broadcast(AlarmType::Intruder, vec!(AlarmDetail::Lockdown)).unwrap()
     }
