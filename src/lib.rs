@@ -1,13 +1,16 @@
+use std::io::{Error, ErrorKind};
+use std::net::{IpAddr, SocketAddr, UdpSocket};
+
+use rsa::pkcs1v15::SigningKey;
+use rsa::RsaPrivateKey;
+use rsa::sha2::Sha256;
+use rsa::signature::{Keypair, RandomizedSigner, Verifier};
+
+use crate::asp_message::ASPMessage;
+use crate::data_structures::{AlarmDetail, AlarmType};
+
 mod data_structures;
 mod asp_message;
-
-use std::io::{Error, ErrorKind};
-use rsa::RsaPrivateKey;
-use rsa::pkcs1v15::{SigningKey};
-use rsa::signature::{Keypair, RandomizedSigner, Verifier};
-use rsa::sha2::{Sha256};
-use std::net::{UdpSocket, SocketAddr, IpAddr};
-use crate::asp_message::ASPMessage;
 
 const PORTNUM: u16 = 56185;
 
@@ -27,7 +30,8 @@ impl ASP {
         self.pretty_name = name.chars().filter(|c| c.is_alphanumeric()).collect();
         Ok(())
     }
-    pub fn broadcast(&self, msg: ASPMessage) -> Result<(), Error> {
+    pub fn broadcast(&self, alm_type: AlarmType, details: Vec<AlarmDetail>) -> Result<(), Error> {
+        
         todo!()
     }
     pub fn try_receive(&self) -> Result<ASPMessage, Error> {
@@ -41,9 +45,8 @@ fn data_err(msg: &str) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use std::time;
-    use rsa::pkcs1v15::{Signature, VerifyingKey};
     use crate::data_structures::{AlarmDetail, AlarmType};
+
     use super::*;
 
     fn test_generate_rand_key() -> SigningKey<Sha256> {
@@ -63,6 +66,7 @@ mod tests {
             activator_name: "test".to_string(),
             alarm_details: vec!(AlarmDetail::Silent),
             alarm_type: AlarmType::Intruder,
+            id: rand::random(),
             signature: None,
             raw: None
         };
@@ -76,11 +80,11 @@ mod tests {
     #[test]
     fn data_encode_decode() {
         let signing_key = test_generate_rand_key();
-        let verifying_key = signing_key.verifying_key();
         let mut orig: ASPMessage = ASPMessage {
             activator_name: "test".to_string(),
             alarm_details: vec!(AlarmDetail::Silent, AlarmDetail::Browser),
             alarm_type: AlarmType::Intruder,
+            id: rand::random(),
             signature: None,
             raw: None
         };
@@ -94,42 +98,24 @@ mod tests {
             assert_eq!(orig.alarm_details[i], new.alarm_details[i]);
         }
     }
-    #[test]
-    fn reject_invalid_timestamp() {
-        let signing_key = test_generate_rand_key();
-        let verifying_key = signing_key.verifying_key();
-        let mut mesg: ASPMessage = ASPMessage {
-            activator_name: "test".to_string(),
-            alarm_details: vec!(AlarmDetail::Silent, AlarmDetail::Evacuate),
-            alarm_type: AlarmType::Intruder,
-            signature: None,
-            raw: None
-        };
-        mesg.encode_body().unwrap();
-        let now = time::SystemTime::now().duration_since(time::UNIX_EPOCH).unwrap();
-        mesg.override_timestamp(now.as_secs() - 240).unwrap();
-        mesg.sign(&signing_key).unwrap();
-        let raw: Vec<u8> = mesg.clone().try_into().unwrap();
-        match ASPMessage::try_from(raw.as_slice()) {
-            Ok(_) => panic!("Accepted out of date timestamp!"),
-            Err(_) => return
-        }
-    }
 
     #[test]
-    fn reject_tampered_signature() {
+    fn reject_tampered_payload() {
         let signing_key = test_generate_rand_key();
         let verifying_key = signing_key.verifying_key();
         let mut mesg: ASPMessage = ASPMessage {
             activator_name: "test".to_string(),
             alarm_details: vec!(AlarmDetail::Evacuate),
             alarm_type: AlarmType::Intruder,
+            id: rand::random(),
             signature: None,
             raw: None
         };
         mesg.sign(&signing_key).unwrap();
-        // tamper with timestamp *after* signing
-        mesg.override_timestamp(946702800).unwrap();
+        // tamper with payload after signing
+        let mut tampered: Vec<u8> = mesg.raw.unwrap();
+        tampered[4] = tampered[4] ^ 0xFF;
+        mesg.raw = Some(tampered);
         // attempt to verify
         match mesg.verify_sig(&verifying_key){
             Ok(_) => panic!("accepted signature of tampered payload"),
