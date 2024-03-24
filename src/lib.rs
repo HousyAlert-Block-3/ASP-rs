@@ -1,13 +1,14 @@
+use std::io;
 use std::io::{Error, ErrorKind};
-use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 
 use rsa::pkcs1v15::SigningKey;
 use rsa::RsaPrivateKey;
 use rsa::sha2::Sha256;
 use rsa::signature::{Keypair, RandomizedSigner, Verifier};
-
-use crate::asp_message::ASPMessage;
+use crate::asp_message::{ASPMessage, MESG_LEN};
 use crate::data_structures::{AlarmDetail, AlarmType};
+use log::{info, warn, debug, error};
 
 mod data_structures;
 mod asp_message;
@@ -25,17 +26,43 @@ impl ASP {
     pub fn init(&mut self, private_key: RsaPrivateKey, address: IpAddr, name: String) -> Result<(), Error> {
         self.socket = UdpSocket::bind(SocketAddr::new(address, PORTNUM))?;
         self.socket.set_broadcast(true)?;
+        self.socket.set_nonblocking(true)?;
         self.signing_key = SigningKey::<Sha256>::new(private_key);
         // Make sure name is only alphanumeric
         self.pretty_name = name.chars().filter(|c| c.is_alphanumeric()).collect();
         Ok(())
     }
     pub fn broadcast(&self, alm_type: AlarmType, details: Vec<AlarmDetail>) -> Result<(), Error> {
-        
-        todo!()
+        let mut mesg: ASPMessage = ASPMessage {
+            activator_name: self.pretty_name.clone(),
+            alarm_details: details,
+            alarm_type: alm_type,
+            id: rand::random(),
+            signature: None,
+            raw: None
+        };
+        mesg.sign(&self.signing_key)?;
+        let raw: Vec<u8> = mesg.try_into().unwrap();
+        let dest = SocketAddrV4::new(Ipv4Addr::new(255,255,255,255), PORTNUM);
+        self.socket.send_to(raw.as_slice(), dest)?;
+        Ok(())
     }
-    pub fn try_receive(&self) -> Result<ASPMessage, Error> {
-        todo!()
+    pub fn try_receive(&self) -> Result<Option<ASPMessage>, Error> {
+        let mut mesgbuff: [u8; MESG_LEN] = [0; MESG_LEN];
+        match self.socket.recv_from(&mut mesgbuff){
+            Ok(recdat) => {
+                info!("Got message from {}", recdat.1);
+                if recdat.0 != MESG_LEN {
+                    warn!("Received payload length wrong! Expected {}, got {}.",MESG_LEN, recdat.0);
+                    return Err(data_err("Received data of incorrect length"));
+                }
+                Ok(Some(ASPMessage::try_from(mesgbuff.as_slice())?))
+            }
+            Err(e) => match e.kind() {
+                io::ErrorKind::WouldBlock => Ok(None),
+                _ => Err(e)
+            }
+        }
     }
 }
 

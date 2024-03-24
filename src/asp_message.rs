@@ -13,7 +13,7 @@ const NAME_LEN: usize = 32;
 const CODE_LEN: usize = 1;
 const ID_LEN: usize = 4;
 const SIG_LEN: usize = 256;
-const MESG_LEN: usize = NAME_LEN + CODE_LEN + ID_LEN + SIG_LEN;
+pub const MESG_LEN: usize = NAME_LEN + CODE_LEN + ID_LEN + SIG_LEN;
 
 
 
