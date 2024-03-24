@@ -41,17 +41,22 @@ fn data_err(msg: &str) -> Error {
 
 #[cfg(test)]
 mod tests {
+    use std::time;
     use rsa::pkcs1v15::{Signature, VerifyingKey};
     use crate::data_structures::{AlarmDetail, AlarmType};
     use super::*;
 
-    #[test]
-    fn sign_and_verify() {
+    fn test_generate_rand_key() -> SigningKey<Sha256> {
         let mut rng = rand::thread_rng();
         // generate random signing key
         let bits = 2048;
         let private_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
-        let signing_key = SigningKey::<Sha256>::new(private_key);
+        SigningKey::<Sha256>::new(private_key)
+    }
+
+    #[test]
+    fn sign_and_verify() {
+        let signing_key = test_generate_rand_key();
         let verifying_key = signing_key.verifying_key();
         // Generate payload
         let mut orig: ASPMessage = ASPMessage {
@@ -67,14 +72,11 @@ mod tests {
         // Verify
         orig.verify_sig(&verifying_key).unwrap();
     }
-    
+
     #[test]
     fn data_encode_decode() {
-        let mut rng = rand::thread_rng();
-        // generate random signing key
-        let bits = 2048;
-        let private_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
-        let signing_key = SigningKey::<Sha256>::new(private_key);
+        let signing_key = test_generate_rand_key();
+        let verifying_key = signing_key.verifying_key();
         let mut orig: ASPMessage = ASPMessage {
             activator_name: "test".to_string(),
             alarm_details: vec!(AlarmDetail::Silent, AlarmDetail::Browser),
@@ -92,4 +94,47 @@ mod tests {
             assert_eq!(orig.alarm_details[i], new.alarm_details[i]);
         }
     }
+    #[test]
+    fn reject_invalid_timestamp() {
+        let signing_key = test_generate_rand_key();
+        let verifying_key = signing_key.verifying_key();
+        let mut mesg: ASPMessage = ASPMessage {
+            activator_name: "test".to_string(),
+            alarm_details: vec!(AlarmDetail::Silent, AlarmDetail::Evacuate),
+            alarm_type: AlarmType::Intruder,
+            signature: None,
+            raw: None
+        };
+        mesg.encode_body().unwrap();
+        let now = time::SystemTime::now().duration_since(time::UNIX_EPOCH).unwrap();
+        mesg.override_timestamp(now.as_secs() - 240).unwrap();
+        mesg.sign(&signing_key).unwrap();
+        let raw: Vec<u8> = mesg.clone().try_into().unwrap();
+        match ASPMessage::try_from(raw.as_slice()) {
+            Ok(_) => panic!("Accepted out of date timestamp!"),
+            Err(_) => return
+        }
+    }
+
+    #[test]
+    fn reject_tampered_signature() {
+        let signing_key = test_generate_rand_key();
+        let verifying_key = signing_key.verifying_key();
+        let mut mesg: ASPMessage = ASPMessage {
+            activator_name: "test".to_string(),
+            alarm_details: vec!(AlarmDetail::Evacuate),
+            alarm_type: AlarmType::Intruder,
+            signature: None,
+            raw: None
+        };
+        mesg.sign(&signing_key).unwrap();
+        // tamper with timestamp *after* signing
+        mesg.override_timestamp(946702800).unwrap();
+        // attempt to verify
+        match mesg.verify_sig(&verifying_key){
+            Ok(_) => panic!("accepted signature of tampered payload"),
+            Err(_) => return
+        }
+    }
+
 }
