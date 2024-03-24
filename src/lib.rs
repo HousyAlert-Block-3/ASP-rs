@@ -23,14 +23,16 @@ pub struct ASP {
 }
 
 impl ASP {
-    pub fn init(&mut self, private_key: RsaPrivateKey, address: IpAddr, name: String) -> Result<(), Error> {
-        self.socket = UdpSocket::bind(SocketAddr::new(address, PORTNUM))?;
-        self.socket.set_broadcast(true)?;
-        self.socket.set_nonblocking(true)?;
-        self.signing_key = SigningKey::<Sha256>::new(private_key);
-        // Make sure name is only alphanumeric
-        self.pretty_name = name.chars().filter(|c| c.is_alphanumeric()).collect();
-        Ok(())
+    pub fn new(signing_key: &SigningKey<Sha256>, name: &str) -> Result<ASP, Error> {
+        let any_iface = IpAddr::from([0,0,0,0]);
+        let mut instance: ASP = ASP {
+            socket: UdpSocket::bind(SocketAddr::new(any_iface, PORTNUM))?,
+            signing_key: signing_key.clone(),
+            pretty_name: name.chars().filter(|c| c.is_alphanumeric()).collect(),
+        };
+        instance.socket.set_broadcast(true)?;
+        instance.socket.set_nonblocking(true)?;
+        Ok(instance)
     }
     pub fn broadcast(&self, alm_type: AlarmType, details: Vec<AlarmDetail>) -> Result<(), Error> {
         let mut mesg: ASPMessage = ASPMessage {
@@ -41,8 +43,12 @@ impl ASP {
             signature: None,
             raw: None
         };
-        mesg.sign(&self.signing_key)?;
-        let raw: Vec<u8> = mesg.try_into().unwrap();
+        self.broadcast_message(mesg)
+    }
+    
+    pub fn broadcast_message(&self, mut message: ASPMessage) -> Result<(), Error> {
+        message.sign(&self.signing_key)?;
+        let raw: Vec<u8> = message.try_into().unwrap();
         let dest = SocketAddrV4::new(Ipv4Addr::new(255,255,255,255), PORTNUM);
         self.socket.send_to(raw.as_slice(), dest)?;
         Ok(())
@@ -148,6 +154,13 @@ mod tests {
             Ok(_) => panic!("accepted signature of tampered payload"),
             Err(_) => return
         }
+    }
+    #[test]
+    fn send_activation_command() {
+        let signing_key = test_generate_rand_key();
+        let verifying_key = signing_key.verifying_key();
+        let asp_inst = ASP::new(&signing_key, "Unit Tests").unwrap();
+        asp_inst.broadcast(AlarmType::Intruder, vec!(AlarmDetail::Lockdown)).unwrap()
     }
 
 }

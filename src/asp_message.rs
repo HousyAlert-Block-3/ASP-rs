@@ -6,6 +6,7 @@ use rsa::pkcs1v15::{Signature, SigningKey, VerifyingKey};
 use rsa::sha2::Sha256;
 use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
 use rand;
+use rand::random;
 use crate::data_err;
 use crate::data_structures::{AlarmDetail, AlarmType};
 
@@ -85,6 +86,16 @@ impl Display for ASPMessage {
 }
 
 impl ASPMessage{
+    pub fn new(activator_name: &str, alarm_details: Vec<AlarmDetail>, alarm_type: AlarmType) -> ASPMessage{
+        ASPMessage {
+            activator_name: activator_name.to_string(),
+            alarm_details,
+            alarm_type,
+            id: random(),
+            signature: None,
+            raw: None
+        }
+    }
     /// Only crate public for testing, encodes message body to byte vector (no signature!)
     pub(crate) fn encode_body(&mut self) -> Result<Vec<u8>, Error> {
         // skip encoding if encoded data already exists
