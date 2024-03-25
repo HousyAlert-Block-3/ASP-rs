@@ -18,7 +18,7 @@ pub const MESG_LEN: usize = NAME_LEN + CODE_LEN + ID_LEN + SIG_LEN;
 
 
 
-
+/// The message structure that is serialized for ASP
 #[derive(Debug, Clone)]
 pub struct ASPMessage {
     pub activator_name: String,
