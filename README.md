@@ -4,9 +4,7 @@
 
 
 This is the implementation of the alarm signaling protocol in Rust for the Housy Alert system, built on top of UDP. 
-## Overview / Design Goals
 
-This protocol was designed 
 
 ## Usage
 
