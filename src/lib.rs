@@ -1,13 +1,13 @@
 use std::io::{Error, ErrorKind};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
-
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use tokio::net::UdpSocket;
 use rsa::pkcs1v15::SigningKey;
 
 use rsa::sha2::Sha256;
 
 use crate::asp_message::{ASPMessage, MESG_LEN};
 use crate::data_structures::{AlarmDetail, AlarmType};
-use log::{info, warn, debug, error};
+use log::{info, warn};
 
 pub mod data_structures;
 pub mod asp_message;
@@ -22,19 +22,19 @@ pub struct ASP {
 }
 /// Struct that stores the context for ASP handling, such as the name and socket.
 impl ASP {
-    pub fn new(signing_key: &SigningKey<Sha256>, name: &str) -> Result<ASP, Error> {
-        let any_iface = IpAddr::from([0,0,0,0]);
+    pub async fn new(signing_key: &SigningKey<Sha256>, name: &str) -> Result<ASP, Error> {
+        // Creates a new instance of ASP struct with the given signing key and name
         let instance: ASP = ASP {
-            socket: UdpSocket::bind(SocketAddr::new(any_iface, PORTNUM))?,
+            socket: UdpSocket::bind(SocketAddr::new(IpAddr::from([0,0,0,0]), PORTNUM)).await?,
             signing_key: signing_key.clone(),
             pretty_name: name.chars().filter(|c| c.is_alphanumeric()).collect(),
         };
         instance.socket.set_broadcast(true)?;
-        instance.socket.set_nonblocking(true)?;
         info!("Registered new socket for ASP");
         Ok(instance)
     }
-    pub fn broadcast(&self, alm_type: AlarmType, details: Vec<AlarmDetail>) -> Result<(), Error> {
+    pub async fn broadcast(&self, alm_type: AlarmType, details: Vec<AlarmDetail>) -> Result<(), Error> {
+        // Broadcasts the given alarm message
         let mesg: ASPMessage = ASPMessage {
             activator_name: self.pretty_name.clone(),
             alarm_details: details,
@@ -43,19 +43,21 @@ impl ASP {
             signature: None,
             raw: None
         };
-        self.broadcast_message(mesg)
+        self.broadcast_message(mesg).await
     }
 
-    pub fn broadcast_message(&self, mut message: ASPMessage) -> Result<(), Error> {
+    pub async fn broadcast_message(&self, mut message: ASPMessage) -> Result<(), Error> {
+        // Signs the given message and broadcasts it to all devices in the network
         message.sign(&self.signing_key)?;
         let raw: Vec<u8> = message.try_into().unwrap();
         let dest = SocketAddrV4::new(Ipv4Addr::new(255,255,255,255), PORTNUM);
-        self.socket.send_to(raw.as_slice(), dest)?;
+        self.socket.send_to(raw.as_slice(), dest).await?;
         Ok(())
     }
-    pub fn try_receive(&self) -> Result<Option<ASPMessage>, Error> {
+    pub async fn try_receive(&self) -> Result<Option<ASPMessage>, Error> {
+        // Attempts to receive a message from the network
         let mut mesgbuff: [u8; MESG_LEN] = [0; MESG_LEN];
-        match self.socket.recv_from(&mut mesgbuff){
+        match self.socket.recv_from(&mut mesgbuff).await{
             Ok(recdat) => {
                 info!("Got message from {}", recdat.1);
                 if recdat.0 != MESG_LEN {
@@ -73,6 +75,7 @@ impl ASP {
 }
 
 fn data_err(msg: &str) -> Error {
+    // Helper function to create an error with the given message
     Error::new(ErrorKind::InvalidData, msg)
 }
 
@@ -86,15 +89,16 @@ mod tests {
 
     fn test_generate_rand_key() -> SigningKey<Sha256> {
         let mut rng = rand::thread_rng();
-        // generate random signing key
         let bits = 2048;
+        // generate random signing key
         let private_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
         SigningKey::<Sha256>::new(private_key)
     }
 
     #[test]
-    fn sign_and_verify() {
+    fn test_sign_and_verify() {
         let signing_key = test_generate_rand_key();
+        // Tests the signing and verification of messages
         let verifying_key = signing_key.verifying_key();
         // Generate payload
         let mut orig: ASPMessage = ASPMessage {
@@ -113,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn data_encode_decode() {
+    fn test_data_encode_decode() {
         let signing_key = test_generate_rand_key();
         let mut orig: ASPMessage = ASPMessage {
             activator_name: "test".to_string(),
@@ -135,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn reject_tampered_payload() {
+    fn test_reject_tampered_payload() {
         let signing_key = test_generate_rand_key();
         let verifying_key = signing_key.verifying_key();
         let mut mesg: ASPMessage = ASPMessage {
@@ -157,11 +161,33 @@ mod tests {
             Err(_) => return
         }
     }
-    #[test]
-    fn send_activation_command() {
+    #[tokio::test]
+    async fn test_send_activation_command() {
         let signing_key = test_generate_rand_key();
-        let asp_inst = ASP::new(&signing_key, "Unit Tests").unwrap();
-        asp_inst.broadcast(AlarmType::Intruder, vec!(AlarmDetail::Lockdown)).unwrap()
+        let asp_inst = ASP::new(&signing_key, "Unit Tests").await.unwrap();
+        asp_inst.broadcast(AlarmType::Intruder, vec!(AlarmDetail::Lockdown)).await.unwrap()
     }
 
+    #[tokio::test]
+    async fn test_parse_raw_packet() {
+        let signing_key = test_generate_rand_key();
+        let asp_inst = ASP::new(&signing_key, "Unit Tests").await.unwrap();
+        asp_inst.broadcast(AlarmType::Intruder, vec!(AlarmDetail::Lockdown)).await.unwrap()
+    }
+
+    #[test]
+    fn test_asp_message_formatting() {
+        // Arrange
+        let mut asp_message = ASPMessage::new("John Doe", vec![AlarmDetail::Lockdown], AlarmType::Intruder);
+        // override message ID to a predictable value
+        asp_message.id = 123;
+        // Act
+        let formatted_string = format!("{}", asp_message);
+    
+        // Assert
+        assert_eq!(formatted_string, "(Alarm ID 123 of type Intruder, activated by: John Doe with details [Lockdown])");
+    }
+    
+
 }
+
