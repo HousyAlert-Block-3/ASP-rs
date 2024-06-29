@@ -1,5 +1,6 @@
 use std::io::{Error, ErrorKind};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::sync::Arc;
 use tokio::net::UdpSocket;
 use rsa::pkcs1v15::SigningKey;
 
@@ -14,9 +15,10 @@ pub mod asp_message;
 
 const PORTNUM: u16 = 56185;
 
+#[derive(Clone)]
 #[derive(Debug)]
 pub struct ASP {
-    socket: UdpSocket,
+    socket: Arc<UdpSocket>,
     signing_key: SigningKey<Sha256>,
     pretty_name: String,
 }
@@ -24,8 +26,9 @@ pub struct ASP {
 impl ASP {
     pub async fn new(signing_key: &SigningKey<Sha256>, name: &str) -> Result<ASP, Error> {
         // Creates a new instance of ASP struct with the given signing key and name
+        let sock = UdpSocket::bind(SocketAddr::new(IpAddr::from([0,0,0,0]), PORTNUM)).await?;
         let instance: ASP = ASP {
-            socket: UdpSocket::bind(SocketAddr::new(IpAddr::from([0,0,0,0]), PORTNUM)).await?,
+            socket: Arc::new(sock),
             signing_key: signing_key.clone(),
             pretty_name: name.chars().filter(|c| c.is_alphanumeric()).collect(),
         };
@@ -73,6 +76,12 @@ impl ASP {
         }
     }
 }
+
+// impl Clone for ASP {
+//     fn clone(&self) -> ASP {
+//         todo!();
+//     }
+// }
 
 fn data_err(msg: &str) -> Error {
     // Helper function to create an error with the given message
@@ -186,6 +195,15 @@ mod tests {
     
         // Assert
         assert_eq!(formatted_string, "(Alarm ID 123 of type Intruder, activated by: John Doe with details [Lockdown])");
+    }
+    #[tokio::test]
+    async fn test_asp_object_clone() {
+        let signing_key = test_generate_rand_key();
+        let asp_inst = ASP::new(&signing_key, "Unit Tests").await.unwrap();
+        let asp_inst_ii = asp_inst.clone();
+        assert_eq!(asp_inst.pretty_name, asp_inst_ii.pretty_name);
+        assert_eq!(asp_inst.socket.local_addr().unwrap(), asp_inst_ii.socket.local_addr().unwrap());
+        assert!(asp_inst_ii.broadcast(AlarmType::Countermand, vec!()).await.is_ok());
     }
     
 
